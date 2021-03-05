@@ -4,6 +4,7 @@ import { OrbitControls } from "../lib/OrbitControls.js";
 import { ConvexGeometry } from '../lib/ConvexGeometry.js';
 import { OBJLoader } from '../lib/OBJLoader.js';
 
+// require("downloadjs")(data, strFileName, strMimeType);
 
 /**
  * Sends a request to the url and returns parsed response
@@ -16,6 +17,14 @@ function httpGet(Url) {
     xmlHttp.open("GET", Url, false); // false for synchronous request
     xmlHttp.send(null);
     return JSON.parse(xmlHttp.responseText);
+}
+
+
+function httpSend(Url, body) {
+    var xmlHttp = new XMLHttpRequest();
+    xmlHttp.open("POST", Url, false); // false for synchronous request
+    xmlHttp.setRequestHeader("Content-Type", "text/json");
+    xmlHttp.send(JSON.stringify(body));
 }
 
 
@@ -34,7 +43,7 @@ function fileGet(file_name, missing_files) {
         }
     };
     rawFile.send(null);
-    return JSON.parse(allText);
+    return allText;
 }
 
 
@@ -128,14 +137,13 @@ function init() {
     var scene = new THREE.Scene();
     var camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 
-    var renderer = new THREE.WebGLRenderer({antialias: true});
+    var renderer = new THREE.WebGLRenderer({antialias: true, preserveDrawingBuffer: true});
     renderer.setSize(window.innerWidth, window.innerHeight);
 
     document.body.appendChild(renderer.domElement);
-    var controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableKeys = false;
-    // controls.autoRotate = true;
-    // controls.autoRotateSpeed = 3;
+    var orbitControls = new OrbitControls(camera, renderer.domElement);
+    orbitControls.enableKeys = false;
+    orbitControls.autoRotateSpeed = 3;
 
     window.addEventListener("resize", function () {
         var width = window.innerWidth;
@@ -174,7 +182,16 @@ function init() {
     directionalLight.position.set(-6, -8, -8);
     scene.add(directionalLight);
 
-    var ambientLight = new THREE.AmbientLight(0xFFFFFF, 0.7);
+    var directionalLight = new THREE.DirectionalLight(0xFFFFFF, 0.2);
+    directionalLight.position.set(-6, -8, 8);
+    scene.add(directionalLight);
+
+    directionalLight = new THREE.DirectionalLight(0xFFFFFF, 0.2);
+    directionalLight.position.set(6, 8, -8);
+    scene.add(directionalLight);
+    
+
+    var ambientLight = new THREE.AmbientLight(0xFFFFFF, 0.2);
     scene.add(ambientLight);
 
     camera.position.set(-1.83222123889, 1.83199683912, -2.66435763809);
@@ -182,7 +199,7 @@ function init() {
     camera.rotation.y = 3.14;
     camera.rotation.x = 0.6;
 
-    return [scene, renderer, camera, controls]
+    return [scene, renderer, camera, orbitControls]
 }
 
 
@@ -193,11 +210,14 @@ window.onload = function() {
         this.num_particles = 0;
         this.color = [255, 255, 0]; // RGB array
         this.pointWidth = 1;
+        this.rotate = false;
 
         this.time = 0.0;
         this.mode = "offline";
         this.speedMode = "1.00";
         this.name = "Pavel Artushkov";
+        this.dorender = false;
+        this.controls_switch = "OrbitControls"
 
         this.drawCube = true;
         this.play = true;
@@ -233,7 +253,7 @@ window.onload = function() {
         };
     };
 
-    var FrameId = 1, direction = 1, arrayOfPoints = [], data, FilesMissing = false;
+    var FrameId = 1, direction = 1, arrayOfPoints = [], data, FilesMissing = false, userId, newFrame = true;
     window.default_size = 0.007;
 
     try {
@@ -242,6 +262,7 @@ window.onload = function() {
         console.log('You have no growth saves in the lib/saves/');
         FilesMissing = true;
     }
+
     var stats = initStats(Stats);
 
     // Dat Gui controls setup
@@ -254,22 +275,70 @@ window.onload = function() {
 
     gui.add(fizzyText, "num_particles").name("Particles").listen();
     var particles_color = gui.addColor(fizzyText, "color").name("Color");
-    var size = gui.add(fizzyText, "pointWidth", 0.1, 2).name("Point width");
-    var mode_chooser = gui.add(fizzyText, "mode", ["offline", "online"]).name("Mode");
+    var controls_size = gui.add(fizzyText, "pointWidth", 0.1, 2).name("Point width");
+    var controls_mode_chooser = gui.add(fizzyText, "mode", ["offline", "online"]).name("Mode");
     gui.add(fizzyText, "reset_defaults").name("Reset defaults");
 
     var playback = gui.addFolder("Playback");
-    playback.add(fizzyText, "play").name("Play").listen();
+    playback.add(fizzyText, "play").name("Play (Space Bar)").listen();
     playback.add(fizzyText, "restart").name("Restart");
     playback.add(fizzyText, "speedMode", ["0.25", "0.5", "0.75", "1.00", "1.25", "1.5", "1.75", "2.00", "5.00", "10.0"]).name("Playback Speed");
-    var timeline = playback.add(fizzyText, "time", 0, 1).step(0.01).name("Timeline").listen();
-    var chooser = playback.add(fizzyText, "currentSave", allSaves).name("Choose save");
+  
+    var controls_timeline = playback.add(fizzyText, "time", 0, 1).step(0.01).name("Timeline").listen();
+    var controls_chooser = playback.add(fizzyText, "currentSave", allSaves).name("Choose save");
+    playback.open();
+
+    var render_folder = gui.addFolder("Render");
+    var controls_rotate = render_folder.add(fizzyText, "rotate").name("Autorotate");
+    var controls_render = render_folder.add(fizzyText, "dorender").name("Start render");
+    
     var author = gui.add(fizzyText, "name").name("Made by:");
     author.domElement.style.pointerEvents = "none";
 
-    playback.open();
+    var download = function() {
+        while (!httpGet("/get_render_status")["status"][userId]) {
+            console.log("Working");
+        }
+        console.log("Done!");
 
-    timeline.onChange(function(value) {
+        var url = "lib/movies/" + userId + ".mp4";
+        let a = document.createElement('a');
+        a.href = url;
+        a.download = url.split('/').pop();
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        var elmnt = document.getElementById("preloader");
+        elmnt.remove();
+    }
+
+
+    controls_render.onChange(function(value) {
+        if (value == false) {
+            var node = document.createElement("div");
+            node.setAttribute("id", "preloader");
+            document.body.appendChild(node);
+
+            var div = document.createElement("div");
+            div.setAttribute("id", "loader");
+
+            var element = document.getElementById("preloader");
+            element.appendChild(div);
+
+            httpSend("/add_render", {"img": "", "user": userId, "update": true});
+
+            setTimeout(download, 100);
+        } else {
+            userId = httpGet("/get_id")["id"];
+        }
+    });
+
+    controls_rotate.onChange(function(value) {
+        controls.autoRotate = value;
+    });
+
+    controls_timeline.onChange(function(value) {
         FrameId = (data.length) * (value);
     });
 
@@ -299,7 +368,7 @@ window.onload = function() {
 
     });
 
-    chooser.onChange(function(value) {
+    var loadSave = function() {
         if (fizzyText.mode === "online") {
             return 0;
         }
@@ -311,10 +380,27 @@ window.onload = function() {
         }
         arrayOfPoints = [];
 
-        data = fileGet("lib/saves/" + fizzyText.currentSave + ".json", FilesMissing);
+        data = JSON.parse(fileGet("lib/saves/" + fizzyText.currentSave + ".json", FilesMissing));
+
+        var elmnt = document.getElementById("preloader");
+        elmnt.remove();
+    }
+
+    controls_chooser.onChange(function(value) {
+        var node = document.createElement("div");
+        node.setAttribute("id", "preloader");
+        document.body.appendChild(node);
+
+        var div = document.createElement("div");
+        div.setAttribute("id", "loader");
+        
+        var element = document.getElementById("preloader");
+        element.appendChild(div);
+
+        setTimeout(loadSave, 100);
     });
 
-    size.onChange(function(value) {
+    controls_size.onChange(function(value) {
         refreshArrayOfPoints(fizzyText, arrayOfPoints);
     });
 
@@ -331,39 +417,43 @@ window.onload = function() {
         var keyCode = event.which;
         if (keyCode == 32) { // Space
             fizzyText.play = !fizzyText.play;
-        } else if (keyCode == 39 && FrameId < data.length) { // Left arrow
+        } else if (keyCode == 39 && FrameId < data.length) { // Right arrow
             FrameId += 5;
             fizzyText.time = (FrameId + 1) / data.length;
-        } else if (keyCode == 37 && FrameId > 6) { // Right arrow
-            FrameId -= 5;
+        } else if (keyCode == 37) { // Left arrow
+            FrameId = Math.max(1, FrameId - 5);
             fizzyText.time = (FrameId + 1) / data.length;
         }
     };
-
 
     var tmp = init();
     var scene = tmp[0];
     var renderer = tmp[1];
     var camera = tmp[2];
-    var controls = tmp[3];
+    var orbitControls = tmp[3];
 
     // run game loop (update, render, repeat)
+
     data = fileGet("/lib/saves/" + fizzyText.currentSave + ".json", FilesMissing);
+
     var GameLoop = function() {
         requestAnimationFrame(GameLoop);
         stats.begin();
-        controls.update();
+        orbitControls.update();
 
 
         if (fizzyText.mode === "online") {
 
+            var status = httpGet("/get_status")["status"];
             data = httpGet("/get_frame");
-            if (httpGet("/get_status")["status"] && data.length !== 0) {
+            if (status && data.length !== 0) {
                 fizzyText.num_particles = data["x"].length;
                 renderPoints(data, scene, fizzyText, arrayOfPoints);
             }
 
-            if (httpGet("/get_poly_status")['status']) {
+            if (status) {
+                console.log("done");
+                // newFrame = true;
                 while (scene.getObjectByName("point") !== undefined) {
                     var selectedObject = scene.getObjectByName("point");
                     scene.remove(selectedObject);
@@ -376,7 +466,7 @@ window.onload = function() {
 
         } else {
 
-            if (Math.round(FrameId) <= 1) {
+            if (Math.round(FrameId) < 1) {
                 direction = 1;
                 fizzyText.play = true;
                 arrayOfPoints = [];
@@ -400,7 +490,14 @@ window.onload = function() {
             }
         }
 
-        renderer.render(scene, camera); 
+        renderer.render(scene, camera);
+
+        if (fizzyText.dorender && fizzyText.play && newFrame) {
+            var image = renderer.domElement.toDataURL("image/png", 1);
+            httpSend("/add_render", {"img": image, "user": userId, "update": false});
+            // newFrame = false;
+        }
+
         stats.end();
     };
     GameLoop(scene);

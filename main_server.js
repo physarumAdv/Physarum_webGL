@@ -2,6 +2,8 @@ const http = require("http");
 const urlapi = require("url");
 const fs = require("fs");
 const path = require("path");
+const { exec } = require("child_process");
+
 const nStatic = require("node-static");
 
 const filePath = path.join(__dirname, "physarum.html");
@@ -11,6 +13,7 @@ var scriptsFileServer = new nStatic.Server(path.join(__dirname, "/scripts"));
 
 var Data = [], Poly = [], Movie = [];
 var NewFrame = false, NewPoly = false;
+var RenderInd = 0, FrameIds = [], Status = [];
 
 function index(req, res) {
     fs.readFile(filePath, {encoding: "utf-8"}, function(err, data) {
@@ -49,7 +52,58 @@ function addFrame(req, res) {
 function getFrame(req, res) {
     res.writeHead(200, {"Content-Type": "text/json"});
     res.end(JSON.stringify(Data));
-    NewFrame = true;
+    NewFrame = false;
+}
+
+function getId(req, res) { 
+    res.writeHead(200, {"Content-Type": "text/json"});
+    res.end(JSON.stringify({"id": RenderInd, "ok": true}));
+    FrameIds.push(0);
+    Status.push(false);
+    RenderInd += 1;
+}
+
+function addRender(req, res) {
+    res.writeHead(200, {"Content-Type": "text/json"});
+
+    var body = "";
+    req.on("data", function (chunk) {
+        body += chunk.toString();
+    });
+
+    req.on("end", function() {
+        var Data = JSON.parse(body);
+        res.end(JSON.stringify({"ok": true}));
+
+        if (Data["update"]) {
+            var task = "ffmpeg -framerate 1/0.015 -pattern_type glob -i 'lib/renders/" + Data["user"] + "_*.png' -r 30 lib/movies/" + Data["user"] + ".mp4";
+            console.log(task);
+            exec(task, (error, stdout, stderr) => {
+                if (error) {
+                    console.log(`error: ${error.message}`);
+                    return;
+                }
+                if (stderr) {
+                    console.log(`stderr: ${stderr}`);
+                    Status[Data["user"]] = true;
+                    return;
+                }
+                console.log(`stdout: ${stdout}`);
+            });
+        } else {
+            var base64Data = Data["img"].replace(/^data:image\/png;base64,/, "");
+            var num = FrameIds[Data["user"]].toString();
+            while (num.length < 5) num = "0" + num;
+
+
+            fs.writeFile("lib/renders/" + Data["user"] + "_" + num + ".png", base64Data, 'base64', function(err) {
+                if (err) {
+                    return console.log(err);
+                }
+            });
+            FrameIds[Data["user"]]++;
+        }
+    });
 }
 
 function addPoly(req, res) {
@@ -77,6 +131,11 @@ function getPoly(req, res) {
 function getPolyStatus(req, res) {
     res.writeHead(200, {"Content-Type": "text/json"});
     res.end(JSON.stringify({"done": true, "status": NewPoly}));
+}
+
+function getRenderStatus(req, res) {
+    res.writeHead(200, {"Content-Type": "text/json"});
+    res.end(JSON.stringify({"done": true, "status": Status, "frames": FrameIds}));
 }
 
 function getStatus(req, res) {
@@ -115,6 +174,15 @@ function main(req, res) {
             break;
         case pathname === "/get_poly_status":
             getPolyStatus(req, res);
+            break;
+        case pathname === "/add_render":
+            addRender(req, res);
+            break;
+        case pathname === "/get_id":
+            getId(req, res);
+            break;
+        case pathname === "/get_render_status":
+            getRenderStatus(req, res);
             break;
         case pathname.startsWith("/lib/"):
             req.url = req.url.replace("/lib", "/");
